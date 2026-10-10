@@ -1,0 +1,9 @@
+profiles:
+  mkrwifi1010:
+    fqbn: arduino:samd:mkrwifi1010
+    platforms:
+      - platform: arduino:samd (1.8.14)
+    libraries:
+      - WiFiNINA (2.1.1)
+      - ArduinoBLE (2.1.0)
+      - Arduino_SpiNINA (0.0.2)

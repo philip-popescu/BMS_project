@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=BMS Heating API
+Comment=Start the household heating API on port 2026
+Exec=/bin/bash "@BMS_ROOT@/scripts/start-api.sh"
+Path=@BMS_WORKDIR@
+Terminal=false
+X-GNOME-Autostart-enabled=true

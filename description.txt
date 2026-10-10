@@ -1,0 +1,133 @@
+BMS PROJECT
+
+The project is about creating a web interface hosted on a raspberry pi that contrls a fleet of arduino mkr controllers in order to controll heaters inside the house.
+It should also manage multiple howseholds. Each house is composed of multiple rooms with each room having a controller + ruuvi-tag sensor pair assigned to it.
+Each room can have set multiple programs that start on different times and specify different temperature targets.
+
+The structure of the project should be as follows:
+
+1. The Arduino mkr 1010 wifi controler:
+    - reads temperature from a ruuvi-tag temperature sensor via bluetooth
+    - toggels on/off the heater output that set on pin 6 on the board
+    - once per minute requests from an API hosted on the raspbarry pi that gives the controller the folowing data and overwrite the default config via the route /get_state:
+        a. the current target temperature (default 23 celsius)
+        b. the negative_delta that, if the current temperature is lower then target - delta the heater is switched on (default 0.1 celsius)
+        c. the positive_delta that, if the current is higher then target + delta the heater is switched off (default 0.1 celsius)
+        d. the MAC address of the associated ruuvi sensor
+    - the controller should be configurable via the serial monitor as follows and retain the configuration even after it is turned off:
+        a. set the ssid and password of the local wifi
+        b. set the api route by ip or by alias eg: BMS on port 2026
+        c. set default MAC address for the associated ruuvi sensor
+        d. reset configuration if the controler recives the text "reset" via serial with the arduino app
+
+2. The raspberry pi 4 model B:
+    - should host the following 2 aplications:
+        i. the web API on port 2026 that exposes the following routes:
+            a. GET /get_state responds with the current state of the requesting controller, controller id is determined my its fix ip address
+            b. PUT /set_config?id="household_id" that sets the new config for the specified home, if the household_id does not exist add it to the list of houses 
+            c. GET /get_config?id="howsehold_id" get the config of a house
+            d. GET /get_house_list returns list of existing houses
+        
+        ii. A react frontend in order to configure the sistem by comunicating with the above mentiond API. The frontend should have the following features:
+            a. add a new house th the system
+            b. select a house and view each room with it's associated configuration
+            c. add/remove rooms from a house
+            d. eddit the room's programs by adding or removing them
+            e. eddit a room's associated controler ip address and temperature sensor MAC address
+    - it is also needed a script that installs all the needed frameworks/apps on the raspbery pi + 2 .desktop files that lounch the 2 servers on login
+
+Response to ai questions:
+
+1. **Heater-off threshold:** confirm `target + positive_delta` as the correction to the source's `current - delta` expression.
+    Correct observations. Fixed in the description above.
+2. **Device control behavior:** define pin polarity, startup output, stale or absent temperature behavior, and acceptable operation while the API is unavailable.
+    On startup the heat should always be switched to ON.
+3. **Scheduling:** confirm daily recurrence, cross-midnight behavior, timezone handling, and daylight-saving behavior.
+    The scheaduale should be the same every day with cross-midnight spill-over, but should support programs for specific days of the week
+4. **Configuration contract:** confirm JSON field names, complete replacement semantics, and whether deltas belong to rooms, households, or a global setting.
+    Choose the JSON field names yourself as long as they are easily human understandable. Deltas belong to rooms.
+5. **Hardware integration:** verify support for the required RuuviTag Bluetooth data format and Wi-Fi/Bluetooth operation on the selected Arduino hardware and firmware libraries.
+    The mkr controler is on the latest firmware version. The following code works for my sensors:
+    "
+void blePeripheralDiscoveredHandler(BLEDevice central) {
+    if (central.hasManufacturerData() && central.hasAdvertisementData()) {
+        uint8_t manufacturer[central.manufacturerDataLength()];
+        central.manufacturerData(manufacturer, central.manufacturerDataLength());
+
+        if ((int)manufacturer[0] == 153 && (int)manufacturer[1] == 4) {
+            #if DEBUG
+                Serial.print("Discovered event from RuuviTag with Mac: ");
+                Serial.println(central.address());
+            #endif
+        } else {
+            #if DEBUG
+                Serial.print("Advertisement is from an unknown Device with Manufacturer Id: ");
+                Serial.print((int)manufacturer[1], HEX);
+                Serial.print((int)manufacturer[0], HEX);
+                Serial.println();
+            #endif
+            return;
+        }
+    } else {
+        // no manufacturer Data available
+        #if DEBUG
+            Serial.print("Discovered Device with mac: ");
+            Serial.print(central.address());
+            Serial.println(" but does no advertised data or manufacturer data");
+        #endif
+        return;
+    }
+
+    // Load the Advertised Data and store the values
+    int l = central.advertisementDataLength();
+    uint8_t value[l];
+    central.advertisementData(value, l);
+
+    int l_payload = (int)value[3];
+    int format = (int)value[7];
+    int payload_start = 8;
+
+    if (format == 5) {  
+        int16_t raw_temperature = (int16_t)value[payload_start] << 8 | (int16_t)value[payload_start + 1];
+
+        temperature = raw_temperature * 0.005;  // Celcius
+        #if DEBUG
+            Serial.print("Temperature: ");
+            Serial.println(temperature);
+        #endif
+    } else {
+        #if DEBUG
+            Serial.print("Unknown Data Format from RuuviTag received: ");
+            Serial.println(format);
+        #endif        
+    }
+}
+    "
+6. **Controller identity:** choose how fixed IP addresses are assigned and how households on different networks reach the API without ambiguous controller addresses.
+    Ip address should be manualy assigned through the serial monitor inside the arduino ide. The households share the same network.
+7. **Deployment:** select the backend, persistent storage, Raspberry Pi OS, frontend port, and hostname resolution method.
+    The beckend should be built with a python flask server, the data should be stored in json files, latest raspberry pi os version, choose the frontend port most suitable.
+    The hostname of the raspberry is BMS.
+8. **Serial configuration:** define command syntax, baud rate, reset defaults, and whether API-provided values persist after reboot.
+    Comands should be one word folowed by request prompts for each field if needed, for example:
+    "
+    message: set-ip
+    response: Enter ip addres:
+    message: 192.168.0.15
+    response: Fixed ip set to 192.168.0.15
+    "
+    Also if you tipe "help" it should list the commands list.
+    The only API provided value that should persist is the sensor MAC addres.
+9. **Access model:** define who can access the configuration API and frontend, and whether authentication is required for the intended deployment.
+    Authentication is not requiered as they are only acceptable on the local network.
+
+## 10. Decisions to confirm before implementation
+
+1. **API outages:** confirm continuing temperature control with the last valid runtime settings, and whether an outage duration limit is required. API-provided target and deltas are already confirmed as nonpersistent across reboot.
+  Continue with the latest runtime settings setings with a duration limit of 5 hours until switching to default settings.
+2. **Daylight-saving transitions:** define how skipped and repeated local program start times behave. The selected timezone defaults to the Raspberry Pi's configured timezone unless a household specifies one.
+  When a transition happens all the programs are shifted in accordance. 
+3. **Configuration replacement:** confirm that `/set_config` replaces the complete household configuration and removes omitted rooms and programs.
+  Feel free to add aditional routs for better coordination between frontend and backend.
+4. **Reset behavior:** confirm clearing local Wi-Fi, static IP, and sensor settings, restoring `BMS:2026` and runtime defaults, and restarting the controller.
+  A factory reset should be dobe by "factory-reset" command, while a simple "reset" command should just restart the hardware. 

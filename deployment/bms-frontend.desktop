@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=BMS Heating Interface
+Comment=Start the React household interface on port 3000
+Exec=/bin/bash "@BMS_ROOT@/scripts/start-frontend.sh"
+Path=@BMS_WORKDIR@
+Terminal=false
+X-GNOME-Autostart-enabled=true
