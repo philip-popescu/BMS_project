@@ -18,10 +18,11 @@
 #error "Select Arduino MKR WiFi 1010 (arduino:samd:mkrwifi1010)."
 #endif
 
-const uint8_t HEATER_PIN = 6;
+const uint8_t HEATER_PIN = 4;
 const uint32_t CONFIG_MAGIC = 0x424D5301;
 const uint32_t POLL_INTERVAL_MS = 60000UL;
 const uint32_t NINA_STARTUP_WAIT_MS = 1500UL;
+const uint32_t SENSOR_LOG_INTERVAL_MS = 1000UL;
 
 struct Configuration {
   uint32_t magic;
@@ -50,6 +51,8 @@ String ninaFirmware = "unknown";
 bool networkNeedsRestart = false;
 uint32_t lastPoll = 0;
 uint32_t lastBleAttempt = 0;
+uint32_t lastSensorLog = 0;
+bool sensorReadingReceived = false;
 String serialLine;
 String command;
 uint8_t promptStep = 0;
@@ -133,6 +136,16 @@ void blePeripheralDiscoveredHandler(BLEDevice peripheral) {
   noInterrupts();
   control.reading(temperature, now);
   interrupts();
+  const bool firstReading = !sensorReadingReceived;
+  sensorReadingReceived = true;
+  // Every valid reading updates control; only serial output is rate-limited.
+  if (firstReading || uint32_t(now - lastSensorLog) >= SENSOR_LOG_INTERVAL_MS) {
+    lastSensorLog = now;
+    if (Serial) {
+      Serial.print("Ruuvi sensor "); Serial.print(address);
+      Serial.print(" temperature: "); Serial.print(temperature, 3); Serial.println(" C");
+    }
+  }
 }
 
 void readRadioFirmware(bool restartModule) {
@@ -210,6 +223,36 @@ void printNetworkStatus() {
   if (networkNeedsRestart) Serial.println("Network changes are pending. Type reset to apply them.");
 }
 
+void printControlStatus() {
+  // Copy shared fields together; keep formatting and USB output outside the ISR lock.
+  noInterrupts();
+  const double target = control.target;
+  const double negative = control.negativeDelta;
+  const double positive = control.positiveDelta;
+  const double temperature = control.temperature;
+  const bool hasReading = control.hasReading;
+  const bool hasApiState = control.hasApiState;
+  const uint32_t sensorStamp = control.sensorStamp;
+  const uint32_t apiStamp = control.apiStamp;
+  interrupts();
+  const uint32_t now = millis();
+  Serial.print("Active settings (C): target_temperature="); Serial.print(target, 6);
+  Serial.print(", negative_delta="); Serial.print(negative, 6);
+  Serial.print(", positive_delta="); Serial.println(positive, 6);
+  Serial.print("Settings source: ");
+  if (hasApiState) {
+    Serial.print("API (last valid update "); Serial.print(uint32_t(now - apiStamp)); Serial.println(" ms ago)");
+  } else Serial.println("defaults (no active API configuration)");
+  Serial.print("Assigned Ruuvi sensor: ");
+  Serial.println(strlen(configuration.sensorMac) ? configuration.sensorMac : "not set");
+  Serial.print("Latest Ruuvi temperature: ");
+  if (sensorReadingReceived) {
+    const uint32_t age = uint32_t(now - sensorStamp);
+    Serial.print(temperature, 3); Serial.print(" C (age "); Serial.print(age); Serial.print(" ms, ");
+    Serial.println(hasReading && age <= ControlLogic::SENSOR_TIMEOUT_MS ? "fresh)" : "stale)");
+  } else Serial.println("unavailable (no valid reading from the assigned sensor yet)");
+}
+
 void startBle() {
   lastBleAttempt = millis();
   if (bleReady) return;
@@ -261,8 +304,14 @@ bool applyApiBody(const String& payload) {
   control.apiState(target, negative, positive, now);
   interrupts();
   if (changed) {
+    sensorReadingReceived = false;
     mac.toCharArray(configuration.sensorMac, sizeof(configuration.sensorMac));
     persist();
+  }
+  if (Serial) {
+    Serial.print("API config received and applied: ");
+    serializeJson(document, Serial);
+    Serial.println();
   }
   return true;
 }
@@ -380,13 +429,13 @@ void handleLine(String value) {
     value.trim();
     if (value == "help") {
       Serial.println("Commands: help, status, debug-radio, set-wifi, set-ip, set-api, set-sensor, reset, factory-reset");
-      Serial.println("status: show current Wi-Fi connection, IP address, saved network settings, and radio/BLE status.");
+      Serial.println("status: show Wi-Fi/IP, radio/BLE, active settings, and latest Ruuvi temperature and age.");
       Serial.println("debug-radio: enable BLE command tracing and retry a failed radio initialization; reset disables tracing.");
       Serial.println("reset: restart and preserve settings. factory-reset: clear local settings and restart.");
       Serial.println("Use cancel to abandon a prompted update. Network changes require reset.");
       return;
     }
-    if (value == "status") { printRadioStatus(); printNetworkStatus(); return; }
+    if (value == "status") { printRadioStatus(); printNetworkStatus(); printControlStatus(); return; }
     if (value == "debug-radio") {
       BLE.debug(Serial);
       Serial.println("BLE command tracing enabled until restart. No configuration was erased.");
@@ -462,6 +511,7 @@ void handleLine(String value) {
   bool sensorChanged = strcmp(updated.sensorMac, configuration.sensorMac) != 0;
   const bool needsRestart = command == "set-ip" || command == "set-wifi";
   if (sensorChanged) {
+    sensorReadingReceived = false;
     const uint32_t now = millis(); noInterrupts(); control.sensorChanged(now); interrupts();
   }
   const bool changed = memcmp(&updated, &configuration, sizeof(Configuration)) != 0;

@@ -117,6 +117,10 @@ To update the module in Arduino IDE 2:
 
 These update steps follow [Arduino's Firmware Updater instructions](https://support.arduino.cc/hc/en-us/articles/360013896579-Use-the-Firmware-Updater-in-Arduino-IDE). If NINA already reports 3.0.1+ but initialization still fails, confirm the selected board and actual library paths in verbose compilation output and power-cycle the board. Run `status`, then `debug-radio` and provide their complete output. The latter enables ArduinoBLE's HCI command trace and immediately retries failed initialization without erasing configuration; `reset` disables tracing. A supported version alone does not prove the radio hardware or SPI communication is working.
 
+If an upload reports `No device found on COM...`, close the updater, Serial Monitor, and other applications using the port. Press RESET twice quickly; the fading LED indicates the bootloader is waiting for an upload. Select the newly detected port before retrying, following [Arduino's bootloader reset instructions](https://support.arduino.cc/hc/en-us/articles/5779192727068-Reset-your-board). The bootloader and running sketch can use different ports; during the recovery on this controller they were **COM5** and **COM7**, respectively. Check the current port each time. Heating control is paused while the bootloader or updater is running.
+
+Recovery on **2026-10-11** succeeded using Arduino Firmware Uploader 2.4.1 to reinstall **NINA 3.0.1**, followed by a verified upload of `BMSController`. Immediately afterward, BMS still reported a blank version and Wi-Fi status **255**. Disconnecting **all power sources for 10 seconds**, including USB and any battery/external supply, then reconnecting restored the firmware response and active BLE scanning. The final `status` confirmed **3.0.1**, supported compatibility, and scanning active. Saved Wi-Fi, static IP, and sensor settings were cleared by the sketch uploads and require reconfiguration; without an assigned sensor, heating remains ON.
+
 For a persistently blank version, first disconnect every power source, including USB and any battery, then reconnect and run `status` again. If it remains blank, use the temporary [`NinaProbe` sketch](firmware/NinaProbe/NinaProbe.ino) to isolate the radio from BMS: select MKR WiFi 1010, upload it, and open Serial Monitor at **115200 baud** with newline termination. It prints the Wi-Fi status and firmware response without the BMS timer or FlashStorage. Type `recover` to reset NINA through Arduino's shared SPI driver and repeat the check after an additional 1.5-second wait. If a version is readable, type `ble` to trace Bluetooth initialization and test scanning. Provide the complete startup and command output, including where a call stops if it hangs.
 
 The probe is a temporary diagnostic and keeps pin **6 HIGH** throughout; it does not regulate heating or contact the API. Uploading it erases saved BMS FlashStorage settings. Restore `BMSController` and reconfigure it after the test. A failure in the standalone probe points toward the module, its firmware, power, or the SPI/library path; a successful probe with a failing BMS sketch calls for further investigation of BMS integration. Neither result alone establishes that the hardware is defective.
@@ -125,7 +129,7 @@ Upload the sketch, open the serial monitor at `115200` baud, and select newline 
 
 | Command | Operation |
 | --- | --- |
-| `status` | Show current Wi-Fi connection and IP, saved network settings, pending restart, NINA firmware, and BLE scanning state. |
+| `status` | Show current Wi-Fi/IP, saved network settings, pending restart, radio/BLE status, active target/deltas and their source, assigned sensor, and latest temperature with age and fresh/stale status. |
 | `debug-radio` | Enable BLE HCI tracing and retry failed initialization; tracing ends on restart. |
 | `set-wifi` | Enter SSID and password; blank password selects an open network. |
 | `set-ip` | Enter static IP, subnet, gateway, and DNS. Blank subnet uses `255.255.255.0`; blank DNS uses the gateway. |
@@ -147,13 +151,22 @@ Heating switches ON below `target - negative_delta` and OFF above `target + posi
 
 Only the API-supplied sensor MAC is written to flash, and only when it changes. Runtime target and deltas return to defaults on reboot. The decoder reads bounded manufacturer data rather than fixed advertisement offsets, handles signed format-5 temperatures, and rejects the unavailable-temperature sentinel according to [Ruuvi RAWv2 documentation](https://docs.ruuvi.com/communication/bluetooth-advertisements/data-format-5-rawv2).
 
+With Serial Monitor open at **115200 baud**, each accepted API response prints its configuration JSON after applying it. Valid readings from the assigned Ruuvi sensor print its MAC and temperature in Celsius with three decimal places. Sensor logging prints the first reading after each assignment and then at most once per second; every valid advertisement still updates heater control and the sensor timeout. Example output:
+
+```text
+API config received and applied: {"target_temperature":23.0,"negative_delta":0.1,"positive_delta":0.1,"sensor_mac":"AA:BB:CC:DD:EE:FF"}
+Ruuvi sensor AA:BB:CC:DD:EE:FF temperature: 22.895 C
+```
+
+Run `status` to inspect the active target/deltas, whether they come from a current API response or defaults, the assigned sensor MAC, and its latest received temperature and age. After the sensor timeout, the last temperature is marked **stale**. Changing the sensor assignment clears that diagnostic reading, so an old sensor's temperature cannot appear under the new assignment. Invalid API responses and unrelated or malformed sensor advertisements do not produce accepted-data logs. Receipt logs and diagnostic readings are runtime-only; they do not add flash writes.
+
 Compile with Arduino CLI using the pinned profile, which resolves its platform and libraries:
 
 ```bash
 arduino-cli compile --profile mkrwifi1010 firmware/BMSController
 ```
 
-The compiled sketch uses approximately 88 KB of flash and 7 KB of static RAM with the listed versions. FlashStorage configuration survives power cycles but is erased when a replacement sketch is uploaded, as described in [FlashStorage's documentation](https://github.com/cmaglie/FlashStorage#faq). Reconfigure the controller after firmware uploads.
+The compiled sketch uses approximately 91 KB of flash and 7 KB of static RAM with the listed versions. FlashStorage configuration survives power cycles but is erased when a replacement sketch is uploaded, as described in [FlashStorage's documentation](https://github.com/cmaglie/FlashStorage#faq). Reconfigure the controller after firmware uploads.
 
 ## Tests and verification
 
