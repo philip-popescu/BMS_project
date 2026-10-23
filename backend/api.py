@@ -12,6 +12,8 @@ from flask import Flask, jsonify, request
 from werkzeug.exceptions import HTTPException
 
 from . import model
+from .controller_api import register_controller_routes
+from .controllers import OperationStore, validate_reservations
 from .scheduler import active_target
 from .storage import HouseStore
 
@@ -51,6 +53,8 @@ def create_app(config=None):
     ZoneInfo(app.config["DEFAULT_TIMEZONE"])
     store = HouseStore(app.config["DATA_DIR"], app.config["DEFAULT_TIMEZONE"])
     app.extensions["house_store"] = store
+    operations = OperationStore(app.config.get("CONTROLLER_DATA_DIR") or Path(app.config["DATA_DIR"]).parent / "controllers")
+    app.extensions["controller_operations"] = operations
     networks = [ip_network(n.strip()) for n in app.config["ALLOWED_NETWORKS"].split(",") if n.strip()]
     origins = {o.strip().lower() for o in app.config["ALLOWED_ORIGINS"].split(",") if o.strip()}
 
@@ -126,7 +130,9 @@ def create_app(config=None):
         valid = model.household(value["id"], value, app.config["DEFAULT_TIMEZONE"])
         houses[valid["id"]] = valid
         model.validate_assignments(houses)
-        store.save(valid)
+        with operations.transaction() as pending:
+            validate_reservations(houses, pending)
+            store.save(valid)
         return valid
 
     @app.get("/get_house_list")
@@ -210,4 +216,5 @@ def create_app(config=None):
             result = model.find(model.find(saved["rooms"], room_id, "Room")["programs"], program_id, "Program")
             return jsonify(result)
 
+    register_controller_routes(app, store, operations)
     return app

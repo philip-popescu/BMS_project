@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { api, roomPath, programPath } from './api';
 import { DAYS, shortDay, offsetMinutes, toUtc, toLocal, activeProgram } from './schedule.mjs';
 import { newId } from './identifiers.mjs';
+import ControllerDialog from './ControllerDialog';
 import './styles.css';
 
 function Icon({ name, size = 20 }) {
@@ -83,7 +84,7 @@ function RoomForm({ house, room, onClose, onSave }) {
   }
   return <Dialog title={room ? 'Room settings' : 'Add a room'} onClose={onClose}><FormShell {...{ error, busy, onClose }} onSubmit={submit} submit={room ? 'Save room' : 'Add room'}>
     <Field label="Room name"><input autoFocus required maxLength={128} placeholder="e.g. Living room" value={values.name} onChange={update('name')}/></Field>
-    <div className="form-grid"><Field label="Controller IP" hint="Must match the static IP configured through serial."><input required placeholder="192.168.1.50" value={values.controller_ip} onChange={update('controller_ip')}/></Field><Field label="RuuviTag MAC" hint="Changes reach the controller on its next poll."><input required placeholder="AA:BB:CC:DD:EE:FF" value={values.sensor_mac} onChange={update('sensor_mac')} pattern="([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}"/></Field></div>
+    <div className="form-grid"><Field label="Controller IP" hint="Use the unique IP saved in the controller settings window."><input required placeholder="192.168.0.211" value={values.controller_ip} onChange={update('controller_ip')}/></Field><Field label="RuuviTag MAC" hint="Changes reach the controller on its next poll."><input required placeholder="AA:BB:CC:DD:EE:FF" value={values.sensor_mac} onChange={update('sensor_mac')} pattern="([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}"/></Field></div>
     <div className="form-grid"><Field label="Heating-on delta (°C)"><input required type="number" min="0" step="any" value={values.negative_delta} onChange={update('negative_delta')}/></Field><Field label="Heating-off delta (°C)"><input required type="number" min="0" step="any" value={values.positive_delta} onChange={update('positive_delta')}/></Field></div>
     <p className="form-note">Heating turns on below target minus the on delta, and off above target plus the off delta.</p>
   </FormShell></Dialog>;
@@ -157,14 +158,14 @@ function App() {
     return () => controller.abort();
   }, [selected]);
   useEffect(() => { if (!notice) return; const timer = setTimeout(() => setNotice(''), 4500); return () => clearTimeout(timer); }, [notice]);
-  async function reload() {
+  async function reload({ quiet = false } = {}) {
     try {
       const value = await api(`/get_config?id=${encodeURIComponent(selected)}`);
       setHouse(value); setRoomId(current => value.rooms.some(r => r.id === current) ? current : value.rooms[0]?.id || '');
-      setError(''); setNotice('Configuration saved');
+      setError(''); if (!quiet) setNotice('Configuration saved');
     } catch (err) {
       // The mutation has succeeded. A failed refresh must not invite a duplicate write.
-      setError(`Configuration was saved, but refreshing failed: ${err.message}`);
+      setError(quiet ? `Refreshing the room assignment failed: ${err.message}` : `Configuration was saved, but refreshing failed: ${err.message}`);
     }
   }
   async function created(value) {
@@ -182,6 +183,7 @@ function App() {
       <div className="sidebar-label">YOUR HOUSEHOLDS <span>{houses.length.toString().padStart(2, '0')}</span></div>
       <nav aria-label="Households">{houses.map(h => <button key={h.id} className={`house-link ${selected === h.id ? 'selected' : ''}`} onClick={() => { setSelected(h.id); setModal(null); }}><Icon name="home"/><span>{h.name}</span><Icon name="arrow" size={16}/></button>)}</nav>
       <button className="add-house" onClick={() => setModal({ type: 'house' })}><Icon name="plus" size={18}/>Add household</button>
+      <button className="setup-controller" onClick={() => setModal({ type: 'controller-setup' })}><Icon name="network" size={18}/>Set up a controller</button>
       <div className="sidebar-footer"><div className="network-label"><span className="status-dot"/>LOCAL NETWORK</div><p>A comfortable home.<br/>A schedule that works for you.</p><span className="sidebar-version">BMS / 01</span></div>
     </aside>
     <main>
@@ -200,7 +202,7 @@ function App() {
               return <button key={r.id} className={`room-card ${r.id === roomId ? 'active' : ''}`} onClick={() => setRoomId(r.id)}><div><span className="room-symbol"><Icon name="room"/></span><span className="room-card-arrow"><Icon name="arrow" size={17}/></span></div><h3>{r.name}</h3><div className="room-target">{degrees(p?.target_temperature ?? 23)}<span>°C</span></div><div className="room-card-bottom"><span>Scheduled target</span><span>{r.programs.length} {r.programs.length === 1 ? 'program' : 'programs'}</span></div></button>;
             })}</div>}
           </section>
-          {room && <section className="room-detail" aria-label={`${room.name} configuration`}><div className="detail-heading"><div><span className="eyebrow">ROOM CONFIGURATION</span><h2>{room.name}</h2></div><div className="detail-buttons"><button className="button secondary" onClick={() => setModal({ type: 'room', room })}><Icon name="settings" size={17}/>Room settings</button><button className="icon-button" aria-label={`Remove ${room.name}`} onClick={() => setModal({ type: 'delete-room', room })}><Icon name="trash"/></button></div></div>
+          {room && <section className="room-detail" aria-label={`${room.name} configuration`}><div className="detail-heading"><div><span className="eyebrow">ROOM CONFIGURATION</span><h2>{room.name}</h2></div><div className="detail-buttons"><button className="button secondary" onClick={() => setModal({ type: 'controller', room })}><Icon name="network" size={17}/>Controller status</button><button className="button secondary" onClick={() => setModal({ type: 'room', room })}><Icon name="settings" size={17}/>Room settings</button><button className="icon-button" aria-label={`Remove ${room.name}`} onClick={() => setModal({ type: 'delete-room', room })}><Icon name="trash"/></button></div></div>
             <div className="device-strip"><span><Icon name="network" size={17}/><small>CONTROLLER</small><strong>{room.controller_ip}</strong></span><span><Icon name="heat" size={17}/><small>RUUVITAG</small><strong>{room.sensor_mac}</strong></span><span className="delta-detail">On −{degrees(room.negative_delta)}° / Off +{degrees(room.positive_delta)}°</span></div>
             <div className="schedule-heading"><div><h3>Temperature programs</h3><p>Local times · {house.timezone}</p></div><button className="button secondary" onClick={() => setModal({ type: 'program', room })}><Icon name="plus" size={17}/>Add program</button></div>
             {room.programs.length ? <div className="program-list">{[...room.programs].sort((a, b) => toLocal(a, house.timezone, now).time.localeCompare(toLocal(b, house.timezone, now).time)).map(p => {
@@ -209,11 +211,13 @@ function App() {
             })}</div> : <div className="empty-programs"><Icon name="clock"/><div><strong>No programs yet</strong><p>This room uses the default target of 23°C. Add a program to set its daily rhythm.</p></div></div>}
             <p className="schedule-note"><Icon name="clock" size={15}/>UTC timing stays fixed across daylight-saving changes. The latest program continues until the next starts.</p>
           </section>}
-          <footer className="page-footer"><span>BMS / Household heating management</span><span>Changes reach controllers on their next one-minute poll.</span></footer>
+          <footer className="page-footer"><span>BMS / Household heating management</span><span>Schedule changes reach controllers on their next one-minute poll.</span></footer>
         </>}
       </div>
     </main>
     {modal?.type === 'house' && <HouseForm onClose={() => setModal(null)} onSave={created}/>}
+    {modal?.type === 'controller-setup' && <ControllerDialog onClose={() => setModal(null)} onChanged={house ? () => reload({ quiet: true }) : undefined}/>}
+    {modal?.type === 'controller' && house && <ControllerDialog house={house} room={house.rooms.find(r => r.id === modal.room.id) || modal.room} onClose={() => setModal(null)} onChanged={() => reload({ quiet: true })}/>}
     {modal?.type === 'room' && house && <RoomForm house={house} room={modal.room} onClose={() => setModal(null)} onSave={reload}/>}
     {modal?.type === 'program' && house && <ProgramForm house={house} room={modal.room} program={modal.program} onClose={() => setModal(null)} onSave={reload}/>}
     {modal?.type === 'delete-room' && house && <DeleteForm title={`Remove ${modal.room.name}?`} description="This removes the room and its programs from this household. The controller continues using its last settings for up to five hours, then uses its temperature defaults." path={roomPath(house.id, modal.room.id)} onClose={() => setModal(null)} onSave={reload}/>}

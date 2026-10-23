@@ -1,6 +1,6 @@
 /*
  * Temporary MKR WiFi 1010 diagnostic. No BMS timer, FlashStorage, Wi-Fi
- * credentials, or API requests. Pin 6 stays HIGH throughout this test.
+ * credentials, or API requests. Heater pin 4 stays HIGH throughout this test.
  * Restore BMSController and configure it again when the test is complete.
  */
 #include <Arduino.h>
@@ -39,12 +39,12 @@ void help() {
   Serial.println("probe: read Wi-Fi status and NINA version without BMS code.");
   Serial.println("recover: reset NINA using the shared SPI driver, wait 1.5 seconds, and repeat probe.");
   Serial.println("ble: enable HCI tracing, initialize Bluetooth, and start scanning.");
-  Serial.println("Pin 6 remains HIGH. This diagnostic does not regulate heating.");
+  Serial.println("Heater pin 4 remains HIGH. This diagnostic does not regulate heating.");
 }
 
 void setup() {
-  pinMode(6, OUTPUT);
-  digitalWrite(6, HIGH);
+  pinMode(4, OUTPUT);
+  digitalWrite(4, HIGH);
   Serial.begin(115200);
   // Waiting is intentional only in this temporary diagnostic, so its output is captured.
   while (!Serial) { delay(10); }

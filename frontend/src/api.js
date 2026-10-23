@@ -12,7 +12,12 @@ export async function api(path, { method = 'GET', body, signal } = {}) {
   });
   if (response.status === 204) return null;
   const result = await response.json().catch(() => null);
-  if (!response.ok) throw new Error(result?.error?.message || `Request failed (${response.status}).`);
+  if (!response.ok) {
+    const error = new Error(result?.error?.message || `Request failed (${response.status}).`);
+    error.status = response.status;
+    error.details = result;
+    throw error;
+  }
   if (result === null) throw new Error('The API returned an unreadable response.');
   return result;
 }

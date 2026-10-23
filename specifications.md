@@ -1,10 +1,12 @@
 # BMS Project Specifications
 
-**Source:** `description.txt`, the user's follow-up clarifications, and the decisions entered in section 10 of this file.  
-**Status:** Specification incorporating all provided decisions and clarifications.  
+**Source:** `description.txt`, `new_features.md`, the user's follow-up clarifications, and the decisions entered in section 10 of this file.
+
+**Status:** Updated on 2026-10-23 with the confirmed controller-management and web-provisioning requirements.
+
 **Units:** Temperatures and temperature differences are expressed in degrees Celsius.
 
-Confirmed requirements come from the description, its clarification section, the user's follow-up answers, and their edits to section 10. JSON field names, the frontend port, and the additional API routes selected here are implementation decisions. Section 10 records the resolved decisions; section 11 defines the UTC scheduling convention implementing the confirmed daylight-saving policy. The reset commands defined here supersede the original description's use of `reset` to clear configuration.
+Confirmed requirements come from the description, `new_features.md`, its clarification section, the user's follow-up answers, and their edits to section 10. JSON field names, the frontend port, and the additional API routes selected here are implementation decisions. Section 10 records the resolved decisions; section 11 defines the UTC scheduling convention implementing the confirmed daylight-saving policy. The reset commands defined here supersede the original description's use of `reset` to clear configuration.
 
 ## 1. Purpose and scope
 
@@ -14,7 +16,7 @@ Users configure households, rooms, device assignments, and temperature programs 
 
 Required deliverables:
 
-1. Arduino controller firmware, including persistent configuration through the serial monitor.
+1. Arduino controller firmware, including persistent serial and web configuration, first-time Wi-Fi setup through a web page, status reporting, remote restart, and automatic radio recovery.
 2. A Python Flask web API hosted on the Raspberry Pi and listening on port `2026`, with configuration stored in JSON files.
 3. A React frontend that communicates with the API and is served on port `3000`.
 4. A Raspberry Pi installation script that installs the required frameworks and applications.
@@ -26,12 +28,14 @@ All households share the same local network. The API and frontend must be access
 
 | Component | Responsibilities |
 | --- | --- |
-| Raspberry Pi API | Run a Python Flask API on port `2026`, store configuration in JSON files, evaluate room programs, identify controllers by fixed IP address, and return controller state. |
-| React frontend | Run on port `3000`; manage households, rooms, daily and weekday temperature programs, room deltas, controller IP addresses, and sensor MAC addresses. |
-| Arduino controller | Read its assigned RuuviTag through Bluetooth, poll the API once per minute, and switch its heater output on or off. |
+| Raspberry Pi API | Run on port `2026`, persist configuration, evaluate UTC programs, identify controllers by fixed IP, and proxy controller status, settings, and restart requests over the local network. |
+| React frontend | Run on port `3000`; manage households, rooms/zones, programs, deltas and assignments; provide controller status, settings, restart, and commissioning panels. |
+| Arduino controller | Read RuuviTag advertisements, poll the API once per minute, control heating, serve a local management/setup page and JSON interface, and restart after sustained Wi-Fi or Bluetooth reception loss. |
 | RuuviTag | Supply temperature measurements for its assigned room. |
 
-Controllers must reach the Raspberry Pi API through Wi-Fi on the shared local network. Their fixed IP addresses must be manually configured through the Arduino IDE serial monitor. A room's configured controller IP address must match the address seen by the API and must be unique across all households.
+Controllers reach the Raspberry Pi API through Wi-Fi on the shared local network. Their fixed IP addresses can be configured through the web interface or the retained serial commands. A room's configured controller IP must match the address seen by the API and remain unique across households. A room and a zone refer to the same entity.
+
+First-time Wi-Fi setup must work entirely through a controller-hosted web page. A new controller provides a temporary setup Wi-Fi network and serves that page at `http://192.168.0.230`. Its default station IP is also `192.168.0.230`. Commission one default-address controller at a time, assigning each controller a unique operating address before introducing another. Section 4.5 defines this workflow.
 
 The Raspberry Pi hostname is `BMS`. The default API host and port are `BMS:2026`. Hostname resolution must be verified from the controllers and the computers using the frontend; configuring the API by IP address must also be supported.
 
@@ -75,9 +79,11 @@ Each controller must persist the following settings across power loss:
 - Subnet mask, gateway, and DNS settings needed for the selected network configuration.
 - API host, supplied as an IP address or hostname/alias, defaulting to `BMS`.
 - API port, with `2026` as the expected server port.
-- MAC address of its assigned RuuviTag, set through serial or updated by the API.
+- MAC address of its assigned RuuviTag, set through serial/web configuration or updated by the API.
 
-The sensor MAC is the only API-provided value that persists across controller reboots. When the API supplies a different sensor MAC, it replaces the saved serial-configured assignment. Target temperature and both deltas are runtime-only values and return to `23.0`, `0.1`, and `0.1 °C` after every reboot until the next successful API response. The same temperature defaults apply when no valid API state has been received for five hours; this outage fallback preserves the saved sensor MAC and local network settings.
+The sensor MAC is the only value from `/get_state` that persists across controller reboots. When that API supplies a different sensor MAC, it replaces the saved assignment. Explicit management changes through the web settings panel persist Wi-Fi, network, API, and sensor settings just like serial configuration. Target temperature and both deltas remain runtime-only and return to `23.0`, `0.1`, and `0.1 °C` after reboot until the next valid temperature-state response. The five-hour API fallback preserves the saved sensor MAC and network settings.
+
+Controllers also persist the last management command identifier so a retried settings or restart request cannot repeatedly reboot the device. Management metadata does not change the runtime-only status of target temperature and deltas.
 
 ## 4. Arduino firmware requirements
 
@@ -98,7 +104,7 @@ If more than `30 seconds` pass without a valid reading, heating must automatical
 
 ### 4.2 Heater control
 
-The heater control output must use board pin `6`, with `HIGH` meaning heating ON and `LOW` meaning heating OFF. **On every startup or reboot, set pin `6` HIGH so heating starts ON**, before waiting for Wi-Fi, the API, or a sensor reading. Normal temperature control starts when a valid reading for the assigned sensor is available.
+The heater control output must use board pin `4`, with `HIGH` meaning heating ON and `LOW` meaning heating OFF. **On every startup or reboot, set pin `4` HIGH so heating starts ON**, before waiting for Wi-Fi, the API, or a sensor reading. Normal temperature control starts when a valid reading for the assigned sensor is available.
 
 Default runtime settings are:
 
@@ -118,7 +124,7 @@ For a target of `23.0 °C` and deltas of `0.1 °C`, this means switching on belo
 
 The clarified description confirms `target + positive_delta` as the heater-off threshold. The follow-up answers confirm active-HIGH output and switching heating ON after more than 30 seconds without a valid sensor reading.
 
-The missing-sensor rule takes priority over temperature hysteresis: set pin `6` HIGH when the reading age exceeds 30 seconds, even if the heater was previously OFF. At exactly 30 seconds, the reading has not yet exceeded the timeout. Once a fresh valid reading arrives, immediately resume normal temperature control. Use an elapsed-time clock for the timeout so Wi-Fi polling and serial interactions do not delay enforcing it.
+The missing-sensor rule takes priority over temperature hysteresis: set pin `4` HIGH when the reading age exceeds 30 seconds, even if the heater was previously OFF. At exactly 30 seconds, the reading has not yet exceeded the timeout. Once a fresh valid reading arrives, immediately resume normal temperature control. Use an elapsed-time clock for the timeout so Wi-Fi polling and serial interactions do not delay enforcing it.
 
 ### 4.3 API synchronization
 
@@ -171,9 +177,44 @@ Serial-configured settings must survive power loss. **Selected baud rate:** `115
 
 **Confirmed restart behavior:** `reset` restarts the controller without clearing Wi-Fi credentials, static network settings, API host/port, or the saved sensor MAC, including a MAC previously updated by the API. As on every reboot, heating starts ON and the runtime target and deltas return to their defaults until the next valid API response.
 
-**Factory reset behavior:** `factory-reset` clears saved Wi-Fi credentials, static network settings, and the sensor MAC; restores API host `BMS`, port `2026`, and runtime temperature defaults; then restarts the controller. Heating starts ON and remains ON while no assigned sensor supplies a valid reading. The controller must be configured again through the serial monitor before reconnecting with its required static IP.
+**Factory reset behavior:** `factory-reset` clears saved Wi-Fi credentials, custom network settings, the sensor MAC, and management command metadata; restores the default address `192.168.0.230`, API host `BMS`, port `2026`, and runtime temperature defaults; then restarts into web setup. Heating starts ON and remains ON while no assigned sensor supplies a valid reading. The controller can be configured again entirely through its setup web page; serial configuration remains available.
 
 Both commands affect only the controller receiving the serial command. They do not delete household, room, or program JSON files on the Raspberry Pi.
+
+### 4.5 First-time web setup and default network
+
+- A new or factory-reset controller must start a temporary open Wi-Fi access point named `BMS-Setup-<device suffix>` when it has no saved Wi-Fi SSID. The suffix distinguishes nearby controllers.
+- Connect a phone or computer to that network and open `http://192.168.0.230`. Internet access and a running Raspberry Pi connection are not required to load the embedded page. A captive-portal redirect is not required.
+- The page must configure Wi-Fi SSID/password, controller IP, subnet, gateway, DNS, API host/port, and an optional initial sensor MAC. It must work without serial interaction or externally hosted scripts, fonts, or other assets.
+- Defaults are controller IP `192.168.0.230`, subnet `255.255.255.0`, gateway/DNS `192.168.0.1`, and API host/port `BMS:2026`. The setup access point itself remains reachable at `.230` while settings are edited.
+- Validate the complete resulting configuration before saving. An omitted Wi-Fi password preserves the existing one; explicitly choosing an open network saves an empty password. Never return a saved password in status or configuration responses.
+- Report that changes were accepted before restarting with the new saved settings. The browser may need to rejoin the household Wi-Fi and open the controller's newly configured address afterward.
+- Provide a setup recovery path when saved Wi-Fi credentials cannot establish a connection during initial startup, so an incorrectly entered SSID/password can be corrected through the web page.
+- Only one default-address controller may be connected to the household LAN at a time. Configure a unique operating IP, then commission the next device. Existing valid saved IPs must be preserved; this default does not renumber deployed controllers.
+- Setup mode is an explicit commissioning state. Automatic connectivity/reception restarts are suspended during setup to avoid preventing configuration. The independent heater startup and 30-second sensor rules continue.
+
+### 4.6 Controller status, remote settings, and restart
+
+Each controller must serve a bounded HTTP management interface on port `80`, in setup mode and while connected to the LAN. The main web application accesses LAN controllers through the Raspberry Pi API; the embedded setup page accesses its own controller directly.
+
+`GET /status` returns a stable `device_id`, uptime, current Wi-Fi connection/status/IP, BLE scanning state, NINA firmware version, heater state, active target/deltas and source, assigned sensor temperature/reading age, age of any last BLE advertisement, last valid API response age, setup state, restart-pending state, last command identifier, and saved nonsecret configuration. Unavailable measurements/ages are `null`, never a fabricated temperature or a fresh timestamp. Expose only `password_set` for the saved password.
+
+`POST /config` receives `{ "command_id": "...", "device_id": "...", "config": { ... } }`. Supported patch fields are `ssid`, `password`, `ip`, `subnet`, `gateway`, `dns`, `api_host`, `api_port`, and `sensor_mac`. Validate the complete resulting configuration, including subnet/gateway consistency, before one persistent save. Reject unknown fields, incorrect types, an unexpected device identity, and invalid or oversized requests. Omitted fields retain their saved values. A blank sensor assignment is permitted for initial provisioning; a room assigned on the Raspberry Pi must still have a valid sensor MAC.
+
+`POST /restart` receives a command identifier and expected device identity. It preserves saved settings and restarts the hardware. Both settings and restart operations return `202 Accepted` with `command_id`, `accepted: true`, and `restart_required: true` before a short deferred reset. Persist the command identifier, and treat duplicate delivery as the same operation without another flash write or reboot. `restart_pending` becomes false on the next boot. Heating starts ON on every restart, and target/deltas return to defaults pending API synchronization.
+
+Requests have bounded headers/body sizes and an overall receive deadline; incomplete or malformed requests must release the client. Management handling must allow BLE and heater processing to continue. SPI, serial output, JSON parsing, and flash writes must not run inside the heater interrupt.
+
+### 4.7 Automatic connectivity and Bluetooth recovery
+
+The user confirmed a **ten-minute** interval for both recovery conditions and that Bluetooth recovery counts **any received BLE advertisement**:
+
+1. During normal station operation, restart the controller after Wi-Fi has remained disconnected for ten continuous minutes. Reconnection resets that outage interval.
+2. Restart after ten minutes without any received BLE advertisement. Every advertisement refreshes this recovery timer, including unrelated devices and unsupported/malformed sensor payloads received by the BLE discovery handler.
+3. Bluetooth recovery uses a separate timestamp from assigned-sensor temperature acquisition. Unrelated advertisements must never refresh the 30-second assigned-sensor timer or influence heater measurements.
+4. Arm recovery for normal configured operation, while exempting the explicit web setup state in section 4.5. Begin timing from activation if no BLE advertisement has yet been received.
+5. Use elapsed-time arithmetic that handles timer rollover. Recovery must still occur if a radio/library call blocks the main loop; a main-loop-only restart check is insufficient. Keep the independent heater control interrupt active.
+6. Automatic restart preserves all saved settings, starts heating ON, and resets runtime target/deltas to defaults. An API outage alone, with working Wi-Fi and BLE reception, continues to use the five-hour fallback without requiring a restart.
 
 ## 5. Scheduling requirements
 
@@ -384,6 +425,35 @@ Error response format:
 }
 ```
 
+### 6.7 Controller management and commissioning routes
+
+The Raspberry Pi proxies the controller interface from section 4.6. Control-state polling through `/get_state` retains its existing four-field response and once-per-minute cadence. Management is a separate on-demand path and does not require waiting for a temperature-state poll.
+
+| Method and route | Operation |
+| --- | --- |
+| `GET /households/{household_id}/rooms/{room_id}/controller/status` | Retrieve the assigned controller's live status and pending management operation. |
+| `PATCH /households/{household_id}/rooms/{room_id}/controller/config` | Validate and submit a controller settings patch; coordinate IP and sensor changes with the room assignment. |
+| `POST /households/{household_id}/rooms/{room_id}/controller/restart` | Submit a restart preserving saved configuration. |
+| `POST /households/{household_id}/rooms/{room_id}/controller/retry` | Retry an unresolved operation using its original command identifier. |
+| `GET /controllers/setup/status` | Retrieve status from the fixed commissioning address `192.168.0.230` on the LAN. |
+| `PATCH /controllers/setup/config` | Configure a reachable default-address controller on the LAN. |
+| `POST /controllers/setup/restart` | Restart that commissioning controller. |
+| `POST /controllers/setup/retry` | Retry an unresolved commissioning operation with the same identifier. |
+
+The setup proxy routes are for devices already reachable from the Raspberry Pi LAN. A new controller's initial access-point setup is performed on its embedded web page, since a browser connected to that isolated Wi-Fi network cannot assume the Raspberry Pi is reachable.
+
+Status responses use `{ "reachable": true, "status": { ... }, "pending": null }`. If no current device response is available, use `reachable: false`, `status: null`, and a safe error description, preserving pending-operation metadata where applicable. Previously displayed measurements must be labeled as stale or last known rather than presented as live.
+
+Controller settings requests use a plain patch object with the fields listed in section 4.6. The Raspberry Pi assigns a unique command identifier and verifies device identity. A successful delivery returns `202` and `{ "accepted": true, "confirmed": false, "command_id": "...", "restart_required": true, "pending": { ... } }`. Acceptance does not prove the device restarted or joined the new network. Confirm completion through a subsequent status response with matching device/command identifiers, the requested nonsecret settings, and `restart_pending: false`.
+
+Persist unresolved operations outside the household JSON directory so they survive API restarts without being parsed as household files. Reserve old and proposed IPs across households until the result is known. Reject conflicting assignment changes or deletion/replacement of the affected room while an operation is unresolved; preserve unrelated rooms and temperature programs. A controller sensor change must update the room's sensor MAC, preventing the next `/get_state` response from undoing it.
+
+Validate room and device settings before delivery. Store the pending operation and coordinated room assignment before delivering a settings command. A definitive device rejection can restore the previous assignment fields. A transport timeout has an unknown outcome: keep the pending operation/reservations and expose verification/retry instead of claiming rollback or completion. Retrying must reuse the original command identifier so an already executed restart is not repeated. Remove pending secrets once the operation no longer needs them; never include passwords in browser responses, errors, or logs.
+
+Use fixed controller port/path targets derived from saved room IPs or the fixed commissioning address. Do not offer arbitrary URL forwarding or follow HTTP redirects. Bound connection/read times, response size, and JSON parsing. A controller may be busy with its regular API poll, so allow an appropriate bounded management response time. Ordinary offline requests fail visibly rather than becoming indefinitely queued restart commands.
+
+Use `400` for invalid settings, `404` for an unknown room, `409` for conflicting assignments/device identity or an unresolved operation, `502` for unreachable/invalid controller responses, and `504` for timed-out communication. Mutation errors must indicate an unresolved outcome when one exists. All existing LAN access restrictions apply.
+
 ## 7. React frontend requirements
 
 The frontend must enable users to:
@@ -395,6 +465,10 @@ The frontend must enable users to:
 5. Edit a room's controller IP address and sensor MAC address.
 6. Choose whether each program applies every day or only on selected weekdays.
 7. Edit room-level `negative_delta` and `positive_delta` values.
+8. Open a controller status window for each room/zone and view the live fields defined in section 4.6.
+9. Request a restart of the selected controller and distinguish accepted, pending, confirmed, unreachable, and unconfirmed results.
+10. Edit all persistent controller settings through a dedicated controller panel, including Wi-Fi, IP/subnet/gateway/DNS, API host/port, and sensor MAC.
+11. Access instructions and commissioning controls for new default-address controllers, including entirely web-based initial Wi-Fi setup.
 
 Use `/get_house_list` and `/get_config` to load households and their configuration. Create a household through `/set_config` with its complete initial configuration, including an empty `rooms` array when appropriate. Use the room and program routes in section 6.5 for ordinary additions, edits, and removals so unrelated data is preserved.
 
@@ -404,9 +478,15 @@ Show validation and API errors, indicate whether saving succeeded, and preserve 
 
 Convert local time and weekday selections to UTC when creating a program or explicitly editing its schedule. Convert API values back to local display when loading them. Saving an unrelated field, such as a temperature target, must preserve the existing UTC schedule. See section 11 for the conversion convention.
 
-Editing the controller IP in the frontend updates the server's room assignment. The controller's own network address must still be changed separately through `set-ip` in the Arduino IDE serial monitor. Editing the sensor MAC in the frontend is propagated to and persisted by the controller on its next successful `/get_state` poll.
+The room-assignment form continues to identify which controller IP belongs to a room. The dedicated controller settings panel must change the device's actual network settings and coordinate any resulting room IP/sensor assignment through section 6.7. Make this distinction clear in the interface. Ordinary room sensor-assignment edits still propagate on the next successful `/get_state` poll.
 
-Deleting households, displaying live temperatures or heater status, and manually overriding heating are not requested in the source.
+Status windows must refresh while open, show data/loading/error states, and avoid carrying a previous room's readings into another room's window. Display sensor and API data ages and fresh/stale status; an offline controller must not display cached readings as live. Abort obsolete requests when switching rooms or closing a panel.
+
+Before restarting or applying settings that restart the controller, show the affected controller/room and that heating starts ON afterward. Preserve unsaved inputs on failures. A blank password field preserves the saved password unless the user explicitly selects an open network. Never prefill or display a saved password.
+
+Show commissioning instructions even when no household exists: connect to `BMS-Setup-<device suffix>`, open `http://192.168.0.230`, enter the household Wi-Fi and a unique controller IP, then return to the main application. Explain that only one default-address controller can be on the LAN at a time.
+
+Deleting households, temperature history, and manual heating overrides remain outside scope. Live temperatures and heater status are now required by `new_features.md`.
 
 ## 8. Raspberry Pi installation and startup
 
@@ -439,12 +519,12 @@ Login startup is the requested behavior. Install the `.desktop` files in the sel
 | AC-03 | Retrieve an existing household configuration. | The API returns its stored rooms, device assignments, and programs. |
 | AC-04 | Add and remove rooms. | The selected household's configuration reflects the changes. |
 | AC-05 | Add, edit, and remove daily and weekday temperature programs. | The saved room configuration reflects each operation and selected weekdays. |
-| AC-06 | Change a controller IP or sensor MAC assignment. | The API uses the saved assignment for subsequent controller requests; an IP change is also applied to the device separately through serial. |
+| AC-06 | Change a controller IP or sensor MAC through the controller settings panel. | The device and server room assignment are coordinated; completion is verified at the new address without requiring serial configuration. |
 | AC-07 | Request `/get_state` from a configured controller's fixed IP. | The response contains that room's current target, both deltas, and sensor MAC. |
 | AC-08 | Observe controller requests over several minutes. | The controller polls `/get_state` once per minute. |
 | AC-09 | Boot a controller before its first successful API response. | Heating starts ON; target and deltas begin at `23.0`, `0.1`, and `0.1 °C`, and the saved sensor MAC is loaded. |
 | AC-10 | Supply format-5 readings from the assigned RuuviTag and another tag. | The controller decodes the assigned tag's temperature using the supplied conversion and ignores the other tag. |
-| AC-11 | Move measured temperature across the control thresholds and test equality. | Pin `6` switches heating on below `target - negative_delta`, off above `target + positive_delta`, and retains state at and between the thresholds. |
+| AC-11 | Move measured temperature across the control thresholds and test equality. | Pin `4` switches heating on below `target - negative_delta`, off above `target + positive_delta`, and retains state at and between the thresholds. |
 | AC-12 | Configure Wi-Fi, fixed IP and network settings, API host/port, and sensor through prompted serial commands; power-cycle. | The controller retains its saved local configuration. |
 | AC-13 | Send `reset` through the Arduino serial monitor after configuring the controller. | Hardware restarts, stored Wi-Fi/IP/API/sensor settings remain intact, heating starts ON, and runtime target and deltas return to defaults. |
 | AC-14 | Run the installer and then log into the Raspberry Pi desktop. | The Flask API on `2026` and React frontend on `3000` launch through their respective `.desktop` files. |
@@ -456,13 +536,13 @@ Login startup is the requested behavior. Install the `.desktop` files in the sel
 | AC-20 | Submit invalid configuration or a duplicate controller IP. | The request fails with the documented error, and stored configuration remains intact. |
 | AC-21 | Operate Bluetooth temperature acquisition while polling over Wi-Fi. | Both functions continue to work on the actual Arduino hardware with the recorded firmware and library versions. |
 | AC-22 | Access the frontend and API from the intended local network. | The applications work without authentication and are deployed for local network access only. |
-| AC-23 | Stop valid readings from the assigned sensor while heating is OFF; continue sending advertisements from another sensor. | Pin `6` becomes HIGH after more than 30 seconds without a valid assigned-sensor reading; unrelated advertisements do not postpone the timeout. |
-| AC-24 | Restore a valid assigned-sensor reading above `target + positive_delta` after a timeout. | Normal control resumes and pin `6` becomes LOW. |
+| AC-23 | Stop valid readings from the assigned sensor while heating is OFF; continue sending advertisements from another sensor. | Pin `4` becomes HIGH after more than 30 seconds without a valid assigned-sensor reading; unrelated advertisements do not postpone the timeout. |
+| AC-24 | Restore a valid assigned-sensor reading above `target + positive_delta` after a timeout. | Normal control resumes and pin `4` becomes LOW. |
 | AC-25 | Configure daily and day-specific programs at the same UTC start time. | On the specified UTC weekday, the day-specific target takes priority; on other UTC weekdays, the daily target applies. |
 | AC-26 | Stop valid API responses after applying a nondefault state while sensor readings remain available. | The controller retains that runtime state before five hours; at five hours it uses target `23.0 °C` and deltas `0.1 °C`, preserving the sensor MAC and network settings. |
 | AC-27 | Continue failed or invalid polls, then restore a valid API response. | Failures do not refresh the five-hour timer; the valid response immediately applies its state and resets the timer. |
 | AC-28 | Stop both API responses and assigned-sensor readings. | The sensor timeout forces heating ON after more than 30 seconds; the five-hour temperature fallback does not override the missing-sensor rule. |
-| AC-29 | Send `factory-reset` through serial. | Local credentials, static network settings, and sensor MAC are cleared; API defaults become `BMS:2026`; hardware restarts with heating ON; Raspberry Pi JSON configuration remains intact. |
+| AC-29 | Send `factory-reset` through serial. | Local credentials, custom network settings, and sensor MAC are cleared; default IP becomes `.230` and API becomes `BMS:2026`; hardware restarts with heating ON and web setup available; Raspberry Pi JSON configuration remains intact. |
 | AC-30 | Add, patch, and delete rooms and programs through the additional API routes. | Each operation changes only its intended entity, returns the documented status, and preserves unrelated data. |
 | AC-31 | Change one field of a program through `PATCH` and then load the household. | The supplied field changes and omitted fields remain unchanged. |
 | AC-32 | Replace an existing household through `/set_config` with a complete snapshot omitting a former room or program. | The omitted entity is removed; a partial snapshot missing required collections is rejected. |
@@ -470,6 +550,22 @@ Login startup is the requested behavior. Install the `.desktop` files in the sel
 | AC-34 | Move the timezone offset back across a repeated local clock interval. | Stored UTC recurrence remains unchanged, each UTC occurrence is considered once, and the active target does not revert because the local clock repeats. |
 | AC-35 | Create a local Monday `00:30` program while the timezone offset is UTC+02:00. | The stored schedule is Sunday `22:30 UTC`; after an offset change to UTC+03:00, its local display is Monday `01:30`. |
 | AC-36 | Restart the API after a daylight-saving change and save an unrelated program field. | Stored UTC times and weekdays remain unchanged, and the active target is reconstructed from UTC occurrences. |
+| AC-37 | Open the controller status window for each of two rooms. | Each displays its own controller's connection/IP, heater, temperatures, settings, firmware/BLE, and measurement/API ages; switching rooms cannot show another device's status. |
+| AC-38 | Disconnect a controller while its status window is open. | The interface reports unreachable or stale data rather than presenting previous values as live. |
+| AC-39 | Restart a reachable controller from its room panel. | Acceptance is shown first; completion is verified from status after reboot; saved settings remain intact, heating starts ON on pin `4`, and runtime temperature settings reset to defaults. |
+| AC-40 | Update Wi-Fi/network/API/sensor settings from the web panel. | The entire candidate is validated before saving, changes persist across reboot, and the room's IP/sensor assignment stays consistent. |
+| AC-41 | Lose the response after the device accepts an IP change, then retry. | The operation remains unconfirmed until verified; both addresses stay reserved, and duplicate command delivery does not cause repeated reboot. |
+| AC-42 | Read status, configuration, command results, and error responses after entering a Wi-Fi password. | The password is never returned; status provides only whether one is set. |
+| AC-43 | Boot a factory-new controller with no serial connection and no Raspberry Pi connection. | Its setup Wi-Fi network and embedded page at `192.168.0.230` allow complete first-time Wi-Fi/network configuration. |
+| AC-44 | Commission two new controllers sequentially. | Each initially uses `.230`; each receives a unique operating IP before the next joins the LAN. Existing saved addresses are preserved. |
+| AC-45 | Keep Wi-Fi disconnected during normal configured operation for ten continuous minutes. | The controller automatically restarts with saved settings intact; a reconnection before the deadline restarts that timer. |
+| AC-46 | Stop all BLE advertisements during normal operation for ten minutes. | The controller automatically restarts; assigned-sensor heating has already switched ON after more than 30 seconds without a valid reading. |
+| AC-47 | Stop assigned-sensor readings but continue advertisements from another BLE device. | Heating becomes ON after the 30-second sensor timeout; unrelated advertisements refresh only the Bluetooth recovery timer and prevent the ten-minute BLE restart. |
+| AC-48 | Leave an unconfigured controller in web setup for more than ten minutes. | Setup remains available without a restart loop, and heating safeguards continue. |
+| AC-49 | Simulate a stalled radio call and elapsed-time rollover. | Recovery deadlines still execute independently of the blocked main loop and remain correct across rollover. |
+| AC-50 | Enter an invalid SSID/password, subnet/gateway combination, API port, or sensor MAC through web configuration. | The complete candidate is rejected without partial persistence or an incorrect success message. |
+| AC-51 | Restart the API with an unresolved controller operation. | Pending state and old/new IP reservations survive; unrelated room/program edits remain possible and conflicting edits are rejected. |
+| AC-52 | Enter incorrect Wi-Fi credentials through initial web setup. | The controller provides a setup recovery path so credentials can be corrected without serial access. |
 
 ## 10. Decision record
 
@@ -479,8 +575,13 @@ Login startup is the requested behavior. Install the `.desktop` files in the sel
 | Daylight-saving transitions | Preserve UTC timing. Stored UTC start times and weekdays remain fixed; displayed local times shift with the timezone offset. See sections 5 and 11. |
 | Frontend/backend coordination | Additional API routes are authorized. Section 6.5 defines operations for individual rooms and programs; `/set_config` retains complete replacement semantics as a selected implementation decision. |
 | Reset commands | `reset` only restarts the hardware. `factory-reset` clears local configuration and restores defaults before restarting. See section 4.4. |
+| First-time Wi-Fi setup | Must work entirely through a web page; initial serial Wi-Fi configuration is not acceptable. Provide a temporary controller setup access point at `192.168.0.230`. See section 4.5. |
+| Default controller address | Use `192.168.0.230` for commissioning; configure devices one at a time and retain unique operating addresses. |
+| Automatic recovery | Ten continuous minutes for Wi-Fi loss and ten minutes without **any** BLE advertisement. The separate 30-second assigned-sensor heating rule remains unchanged. See section 4.7. |
+| Heater output revision | Use **pin `4`**, matching the current firmware, as confirmed on 2026-10-23. This supersedes the earlier pin `6` assignment; active-HIGH behavior is retained. |
+| Web controller management | Provide per-zone live status, restart, and all persistent settings previously available through serial. Accepted changes must be verified after reboot. See sections 4.6, 6.7, and 7. |
 
-The prior decisions on startup heating ON, active-HIGH pin `6`, the 30-second sensor timeout with heating ON, day-specific priority, room-level deltas, the shared network, serial static IP configuration, Flask/JSON storage, `BMS` hostname, and local access without authentication remain in force.
+The prior decisions on startup heating ON, active-HIGH pin `4`, the 30-second sensor timeout with heating ON, day-specific priority, room-level deltas, the shared network, persistent serial and web network configuration, Flask/JSON storage, `BMS` hostname, and local access without authentication remain in force.
 
 ## 11. UTC scheduling convention
 

@@ -12,7 +12,7 @@ A local heating system implementing [specifications.md](specifications.md): a Py
 | Controller sketch | `firmware/BMSController/` | Arduino serial: `115200` baud |
 | Pi setup and launchers | `scripts/`, `deployment/` | Both servers launch on desktop login |
 
-The interface manages households, rooms, controller IPs, RuuviTag assignments, room deltas, and daily or weekday temperature programs. Targets shown are **scheduled targets**, not live temperature measurements or heater telemetry.
+The interface manages households, rooms, controller settings, RuuviTag assignments, room deltas, and UTC-based temperature programs. Room cards show scheduled targets. Each room also has a **Controller status** window with live temperature, heater, network, BLE, and API information, plus settings and restart controls.
 
 ## Run locally on Windows
 
@@ -79,7 +79,7 @@ Pi launchers load `.env` as a shell environment file. Supported settings:
 
 Requests from outside the allowed networks are rejected; forwarded client IP headers are ignored. The API requires no authentication, as specified. No public hosting or router port forwarding is configured.
 
-Each household is stored in a JSON file named from a hash of its identifier. A process-wide transaction lock coordinates reads and mutations, and writes use temporary files, `fsync`, and atomic replacement. Invalid requests leave existing data intact. Corrupt storage produces an error instead of silently replacing data. Back up the entire `data/houses/` directory and retain filenames when restoring it.
+Each household is stored in a JSON file named from a hash of its identifier. A process-wide transaction lock coordinates reads and mutations, and writes use temporary files, `fsync`, and atomic replacement. Invalid requests leave existing data intact. Corrupt storage produces an error instead of silently replacing data. Pending controller operations are saved separately in `data/controllers/`; they reserve old/new IPs and survive API restarts. Back up both directories together and retain filenames. Pending settings can include a replacement Wi-Fi password until verification completes; passwords are omitted from status, browser responses, and errors, and completed operations are removed.
 
 The four original API routes and all room/program routes in the specification are implemented. Full `/set_config` updates require complete room and program collections. Ordinary edits use `PATCH`, preserving unspecified fields. Deleting a room removes its server assignment; its controller continues with its last state for up to five hours, then uses temperature defaults.
 
@@ -90,6 +90,8 @@ API and stored program times and weekdays are UTC. The frontend accepts local ti
 For example, Monday `00:30` at UTC+02:00 becomes Sunday `22:30 UTC`. It subsequently displays as Monday `01:30` at UTC+03:00. Editing only a target temperature preserves the UTC schedule. The most recent applicable program stays active across midnight and restarts until the next event; rooms with no programs use `23 °C`.
 
 ## Configure Arduino controllers
+
+The heater output is now **pin 4, active HIGH**, as confirmed on 2026-10-23. Connect the heater control to that pin before using this firmware. Heating starts ON on every reboot; more than 30 seconds without a valid reading from the assigned sensor also forces heating ON.
 
 Open `firmware/BMSController/BMSController.ino` in Arduino IDE and select **Arduino MKR WiFi 1010**. Install the SAMD board package and these Library Manager libraries:
 
@@ -123,7 +125,31 @@ Recovery on **2026-10-11** succeeded using Arduino Firmware Uploader 2.4.1 to re
 
 For a persistently blank version, first disconnect every power source, including USB and any battery, then reconnect and run `status` again. If it remains blank, use the temporary [`NinaProbe` sketch](firmware/NinaProbe/NinaProbe.ino) to isolate the radio from BMS: select MKR WiFi 1010, upload it, and open Serial Monitor at **115200 baud** with newline termination. It prints the Wi-Fi status and firmware response without the BMS timer or FlashStorage. Type `recover` to reset NINA through Arduino's shared SPI driver and repeat the check after an additional 1.5-second wait. If a version is readable, type `ble` to trace Bluetooth initialization and test scanning. Provide the complete startup and command output, including where a call stops if it hangs.
 
-The probe is a temporary diagnostic and keeps pin **6 HIGH** throughout; it does not regulate heating or contact the API. Uploading it erases saved BMS FlashStorage settings. Restore `BMSController` and reconfigure it after the test. A failure in the standalone probe points toward the module, its firmware, power, or the SPI/library path; a successful probe with a failing BMS sketch calls for further investigation of BMS integration. Neither result alone establishes that the hardware is defective.
+The probe is a temporary diagnostic and keeps pin **4 HIGH** throughout; it does not regulate heating or contact the API. Uploading it erases saved BMS FlashStorage settings. Restore `BMSController` and reconfigure it after the test. A failure in the standalone probe points toward the module, its firmware, power, or the SPI/library path; a successful probe with a failing BMS sketch calls for further investigation of BMS integration. Neither result alone establishes that the hardware is defective.
+
+### First-time setup through the web
+
+1. Upload the updated `BMSController` sketch. With no saved Wi-Fi credentials it creates an open Wi-Fi network named `BMS-Setup-` followed by a device suffix.
+2. Connect a phone or computer to that network and open **http://192.168.0.230**. The page is embedded in the controller and works without Internet access or the Raspberry Pi.
+3. Enter the household Wi-Fi credentials, a unique operating IP, subnet, gateway, DNS, API host/port, and optionally the initial sensor MAC. Use a numeric Pi address if your router does not resolve `BMS`.
+4. Save and allow the controller to restart, then rejoin your household Wi-Fi. If the new credentials cannot establish the initial connection, use the setup network again to correct them.
+5. In the main app, assign that IP and RuuviTag to a room. Its **Controller status** window provides live status, all persistent controller settings, and restart controls.
+
+Default network values are **192.168.0.230**, subnet **255.255.255.0**, gateway/DNS **192.168.0.1**, and API **BMS:2026**. Commission only one default-address controller on the LAN at a time. Existing saved addresses are preserved. The main app's **Set up a controller** action also manages a default-address device after it has joined the same LAN as the Pi. A computer connected to the controller's isolated setup Wi-Fi uses the embedded page directly.
+
+### Controller status and settings
+
+The main app contacts controllers through the Pi API and the controller's local HTTP server on port **80**. Open a room's **Controller status** window to see current Wi-Fi/IP, heater state, assigned-sensor temperature and age, active target/deltas, last valid API update, BLE reception age, NINA firmware, and uptime. Offline readings are marked as last known. Status refreshes while the window is open.
+
+The settings tab changes Wi-Fi, IP/subnet/gateway/DNS, API host/port, and assigned sensor. The password is write-only: leaving it untouched preserves it; explicitly choosing an open network clears it. Web settings are saved and followed by a restart. Device IP and sensor changes are coordinated with the room assignment; ordinary room assignment edits identify a controller without changing its network configuration.
+
+Commands first show **accepted**, then await confirmation after restart. An interrupted response can leave an operation **unconfirmed** even if the device applied it. Refresh status or use **Check and retry same command**; the original command ID prevents duplicate reboots. Old and new IPs remain reserved until verification, and conflicting room assignment changes are blocked. Changing Wi-Fi or API settings can make the device unreachable from the Pi; use its setup recovery page to correct a failed initial connection.
+
+During normal configured operation, the controller restarts after more than **10 minutes** without Wi-Fi connectivity or without **any Bluetooth advertisement**. Unrelated advertisements refresh only that Bluetooth recovery timer; they never refresh the separate 30-second assigned-sensor reading timer. Automatic recovery is suspended during web provisioning. Recovery deadlines run in the heater timer so a stalled radio call cannot disable them. An API outage with working Wi-Fi and BLE still follows the existing five-hour temperature fallback.
+
+Some connectable advertisements do not reach ArduinoBLE's normal discovery callback. The firmware also observes advertising-report events through its public debug-stream interface, using the trace format tested with **ArduinoBLE 2.1.0**. This observer is silent during normal operation; `debug-radio` also forwards tracing to Serial. Keep the pinned library version or recheck this format and advertisement recovery behavior when upgrading it. Commission this behavior with real advertisements on the controller.
+
+### Serial configuration
 
 Upload the sketch, open the serial monitor at `115200` baud, and select newline or CRLF termination. Type `help`. Commands prompt for each field:
 
@@ -145,7 +171,7 @@ Setting a static IP alone does not join Wi-Fi: both `set-wifi` and `set-ip` must
 
 Subnet masks use separate validation from host addresses: `255.255.255.0` is accepted explicitly or by leaving the subnet prompt blank. Masks must have contiguous bits and allow usable host addresses; the controller must share the gateway's subnet and cannot use that subnet's network or broadcast address.
 
-The heater is active HIGH on pin `6` and starts ON without waiting for USB serial, Wi-Fi, or sensor acquisition. A dedicated SAMD21 **TC5** interrupt evaluates control every approximately 100 ms, independent of blocking radio calls. TC5 is reserved by this sketch; do not add another library that takes over that timer.
+The heater is active HIGH on pin `4` and starts ON without waiting for USB serial, Wi-Fi, or sensor acquisition. A dedicated SAMD21 **TC5** interrupt evaluates control every approximately 100 ms, independent of blocking radio calls. TC5 is reserved by this sketch; do not add another library that takes over that timer.
 
 Heating switches ON below `target - negative_delta` and OFF above `target + positive_delta`, holding its previous state at and between the boundaries. More than 30 seconds without a valid assigned-sensor reading forces heating ON. At five hours without a valid API response, target and deltas return to `23`, `0.1`, and `0.1 °C`, preserving sensor and network configuration. Polling continues once per minute; a valid response restores API settings immediately.
 
@@ -166,7 +192,7 @@ Compile with Arduino CLI using the pinned profile, which resolves its platform a
 arduino-cli compile --profile mkrwifi1010 firmware/BMSController
 ```
 
-The compiled sketch uses approximately 91 KB of flash and 7 KB of static RAM with the listed versions. FlashStorage configuration survives power cycles but is erased when a replacement sketch is uploaded, as described in [FlashStorage's documentation](https://github.com/cmaglie/FlashStorage#faq). Reconfigure the controller after firmware uploads.
+The controller-management build uses **112,960 bytes of flash (43%)** and **9,424 bytes of static RAM (28%)** with the listed versions. FlashStorage configuration survives power cycles but is erased when a replacement sketch is uploaded, as described in [FlashStorage's documentation](https://github.com/cmaglie/FlashStorage#faq). Reconfigure the controller through its setup page after firmware uploads. The setup network uses WiFiNINA's supported custom-IP access-point mode, as illustrated in [Arduino's AP web-server example](https://github.com/arduino-libraries/WiFiNINA/blob/master/examples/AP_SimpleWebServer/AP_SimpleWebServer.ino).
 
 ## Tests and verification
 
@@ -197,6 +223,6 @@ $env:ZIG_LOCAL_CACHE_DIR = "$PWD\.tools\zig-local-cache"
 .\.venv\Scripts\python.exe -m pytest -q
 ```
 
-Without the bridge, pytest explicitly skips the firmware header tests. Coverage includes CRUD and atomic rejection, cross-household IP uniqueness, concurrent updates, disk persistence, local access and CORS, UTC/DST boundaries, strict heater thresholds, sensor/API timeouts, timer rollover, Ruuvi decoding, subnet mask validation, and static network checks. Installer and launchers are checked with Bash syntax validation.
+Without the bridge, pytest explicitly skips the firmware header tests. Coverage includes CRUD and atomic rejection, cross-household IP uniqueness, concurrent updates, disk persistence, local access and CORS, UTC/DST boundaries, strict heater thresholds, sensor/API/recovery timeouts, timer rollover, Ruuvi decoding, network/settings validation, bounded management HTTP parsing, controller handover/retry/reservations, and password redaction. Frontend tests also exercise controller patches and operation messages. Installer and launchers are checked with Bash syntax validation.
 
-Local verification does not replace commissioning on a Raspberry Pi and connected Arduino. Verify hostname resolution, desktop login startup, persistent serial settings, concurrent radio operation, actual sensor reception, and physical pin-6 output on the devices. Browser surfaces were unavailable in the implementation session, so no visual or interactive browser inspection was performed; frontend verification covered the production build, conversion tests, and HTTP serving.
+Local verification does not replace commissioning on a Raspberry Pi and connected Arduino. Verify hostname resolution, desktop login startup, web provisioning, persisted settings, concurrent Wi-Fi/BLE/HTTP operation, remote restart and network handover, recovery after outages, actual sensor reception, and physical pin-4 output on the devices. The 2026-10-23 changes were compiled and tested locally; no controller upload was performed. Browser surfaces were unavailable, so no visual or interactive browser inspection was performed.
